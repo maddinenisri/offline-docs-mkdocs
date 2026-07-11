@@ -552,7 +552,7 @@ def write_ruleflow_catalogs(catalog_dir: Path, docs_dir: Path, rule_to_flow: dic
     write(catalog_dir / "rule-to-ruleflow-catalog.md", "\n".join(reverse_lines))
 
 
-def write_catalogs(source: Path, docs_dir: Path, manifest: dict, site_name: str, has_ruleflows: bool) -> None:
+def write_catalogs(source: Path, docs_dir: Path, manifest: dict, site_name: str) -> None:
     pages = manifest.get("pages", [])
     catalog_dir = docs_dir / "catalogs"
     catalog_index = catalog_dir / "index.md"
@@ -575,17 +575,16 @@ def write_catalogs(source: Path, docs_dir: Path, manifest: dict, site_name: str,
         lines.append(f"- [{titleize(page_type)}]({target.name})")
         write_type_catalog(source, docs_dir, target, page_type, by_type[page_type])
 
-    if has_ruleflows:
-        lines.extend(
-            [
-                "",
-                "## Ruleflow Navigation",
-                "",
-                "- [Ruleflows](../ruleflows/index.md)",
-                "- [Ruleflow Task Catalog](ruleflow-task-catalog.md)",
-                "- [Rule To Ruleflow Catalog](rule-to-ruleflow-catalog.md)",
-            ]
-        )
+    ruleflow_links = []
+    if (docs_dir / "ruleflows" / "index.md").exists():
+        ruleflow_links.append("- [Ruleflows](../ruleflows/index.md)")
+    if (catalog_dir / "ruleflow-task-catalog.md").exists():
+        ruleflow_links.append("- [Ruleflow Task Catalog](ruleflow-task-catalog.md)")
+    if (catalog_dir / "rule-to-ruleflow-catalog.md").exists():
+        ruleflow_links.append("- [Rule To Ruleflow Catalog](rule-to-ruleflow-catalog.md)")
+
+    if ruleflow_links:
+        lines.extend(["", "## Ruleflow Navigation", "", *ruleflow_links])
 
     lines.extend(
         [
@@ -607,7 +606,7 @@ def write_catalogs(source: Path, docs_dir: Path, manifest: dict, site_name: str,
         "",
         "## Start Here",
         "",
-        *( ["- [Ruleflows](ruleflows/index.md)"] if has_ruleflows else [] ),
+        *( ["- [Ruleflows](ruleflows/index.md)"] if (docs_dir / "ruleflows" / "index.md").exists() else [] ),
         "- [Catalogs](catalogs/index.md)",
         "- [Knowledge Base Index](kb-index.md)",
         "- [Generation Summary](generation-summary.md)",
@@ -662,7 +661,10 @@ def write_type_catalog(
     write(target, "\n".join(lines))
 
 
-def yaml_nav(site_name: str, has_ruleflows: bool) -> str:
+def yaml_nav(site_name: str, docs_dir: Path) -> str:
+    has_ruleflows = (docs_dir / "ruleflows" / "index.md").exists()
+    has_ruleflow_task_catalog = (docs_dir / "catalogs" / "ruleflow-task-catalog.md").exists()
+    has_rule_to_ruleflow_catalog = (docs_dir / "catalogs" / "rule-to-ruleflow-catalog.md").exists()
     nav_lines = [
         "nav:",
         "  - Home: index.md",
@@ -680,13 +682,10 @@ def yaml_nav(site_name: str, has_ruleflows: bool) -> str:
             "      - Overview: catalogs/index.md",
         ]
     )
-    if has_ruleflows:
-        nav_lines.extend(
-            [
-                "      - Ruleflow Task Catalog: catalogs/ruleflow-task-catalog.md",
-                "      - Rule To Ruleflow Catalog: catalogs/rule-to-ruleflow-catalog.md",
-            ]
-        )
+    if has_ruleflow_task_catalog:
+        nav_lines.append("      - Ruleflow Task Catalog: catalogs/ruleflow-task-catalog.md")
+    if has_rule_to_ruleflow_catalog:
+        nav_lines.append("      - Rule To Ruleflow Catalog: catalogs/rule-to-ruleflow-catalog.md")
     nav_lines.extend(["  - Knowledge Base: kb-index.md", "  - Generation Summary: generation-summary.md"])
 
     return "\n".join(
@@ -782,11 +781,11 @@ def main() -> int:
     manifest = load_manifest(source)
     ruleflow_index = load_ruleflow_index(args.ruleflow_index.resolve() if args.ruleflow_index else None)
     dependency_graph = load_dependency_graph(args.dependency_graph.resolve() if args.dependency_graph else None)
-    has_ruleflows = bool(ruleflow_index and ruleflow_index.get("ruleflows"))
     rule_to_flow = generate_ruleflow_pages(source, docs_dir, ruleflow_index, dependency_graph)
     usage_pages = append_ruleflow_usage_to_rule_docs(docs_dir, rule_to_flow)
-    write_catalogs(source, docs_dir, manifest, args.site_name, has_ruleflows)
-    write(mkdocs_dir / "mkdocs.yml", yaml_nav(args.site_name, has_ruleflows))
+    has_ruleflows = (docs_dir / "ruleflows" / "index.md").exists()
+    write_catalogs(source, docs_dir, manifest, args.site_name)
+    write(mkdocs_dir / "mkdocs.yml", yaml_nav(args.site_name, docs_dir))
 
     build_mkdocs(mkdocs_dir)
 
@@ -803,7 +802,8 @@ def main() -> int:
 
     print(f"Copied Markdown pages: {len(copied)}")
     if has_ruleflows:
-        print(f"Generated ruleflow pages: {len(ruleflow_index.get('ruleflows', []))}")
+        ruleflow_count = len(ruleflow_index.get("ruleflows", [])) if ruleflow_index else len([path for path in (docs_dir / "ruleflows").iterdir() if path.is_dir()])
+        print(f"Ruleflow pages: {ruleflow_count}")
         print(f"Updated knowledge-base rule pages with ruleflow backlinks: {usage_pages}")
     print(f"Built site: {site_dir}")
     print(f"Packaged ZIP: {dist_zip}")
