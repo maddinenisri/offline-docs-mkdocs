@@ -18,10 +18,13 @@ pip install -r requirements.txt
 python scripts/build_offline_docs.py \
   --source ../odm-asr-map-backed-example/out/manual-llm-rule-requirements/knowledge-base \
   --ruleflow-index ../odm-asr-map-backed-example/out/redux-odm-cli-validation/ruleflow-index/indexes/ruleflow-task-index.json \
+  --dependency-graph ../odm-asr-map-backed-example/out/redux-odm-cli-validation/dependency-graph/rule-dependency-graph.json \
   --site-name "ODM Application Documentation"
 ```
 
-The `--ruleflow-index` option is optional, but recommended for customer delivery. When supplied, the generated site starts from a Ruleflows section and creates one page per ruleflow showing operations, RuleTasks, rules, direct subflows, and recursively nested subflows. Ruleflow pages link forward into matching knowledge-base rule pages, and copied rule pages are enriched with a Ruleflow Usage section that links back to the ruleflows and tasks that reference the rule. It also creates reverse catalogs from rule to ruleflow.
+The `--ruleflow-index` option is optional, but recommended for customer delivery. When supplied, the generated site starts from a Ruleflows section and creates one page per ruleflow showing operations, RuleTasks, rules, direct subflows, and recursively nested subflows. Ruleflow pages link forward into matching knowledge-base rule pages, and copied rule pages are enriched with a Ruleflow Usage section that links back to the ruleflows and tasks that reference the rule.
+
+The `--dependency-graph` option is also recommended. It enriches each ruleflow rule with deterministic evidence from `rule-dependency-graph.json`, including reads, writes, and created/inserted/required objects. This keeps ruleflow pages useful even when a full Markdown rule document has not been generated yet.
 
 Outputs:
 
@@ -32,7 +35,7 @@ Outputs:
 Generated customer navigation includes:
 
 - `ruleflows/index.html` - all ruleflows with task/subflow/rule counts
-- `ruleflows/*.html` - one page per ruleflow with nested task/subflow tree and previous/next ruleflow navigation
+- `ruleflows/*.html` - one page per ruleflow with nested task/subflow tree, previous/next ruleflow navigation, doc availability, reads, writes, and object evidence
 - copied rule pages include `Ruleflow Usage` backlinks when the ruleflow index source file matches a knowledge-base Markdown page
 - `catalogs/ruleflow-task-catalog.html` - root ruleflow, owning ruleflow, task, and rule mapping
 - `catalogs/rule-to-ruleflow-catalog.html` - reverse lookup from rule to ruleflows

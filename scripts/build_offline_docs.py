@@ -122,6 +122,38 @@ def load_ruleflow_index(ruleflow_index: Path | None) -> dict | None:
     return json.loads(ruleflow_index.read_text(encoding="utf-8"))
 
 
+def load_dependency_graph(dependency_graph: Path | None) -> dict | None:
+    if dependency_graph is None:
+        return None
+    if not dependency_graph.exists():
+        raise SystemExit(f"Dependency graph does not exist: {dependency_graph}")
+    return json.loads(dependency_graph.read_text(encoding="utf-8"))
+
+
+def path_matches(left: str, right: str) -> bool:
+    return left == right or left.endswith(f"/{right}") or right.endswith(f"/{left}")
+
+
+def build_graph_lookup(dependency_graph: dict | None) -> dict[str, dict]:
+    lookup: dict[str, dict] = {}
+    if not dependency_graph:
+        return lookup
+    for node in dependency_graph.get("nodes", []):
+        source = node.get("sourceRuleFile")
+        if source:
+            lookup[source] = node
+    return lookup
+
+
+def find_graph_node(graph_by_file: dict[str, dict], source_file: str) -> dict | None:
+    if source_file in graph_by_file:
+        return graph_by_file[source_file]
+    for candidate, node in graph_by_file.items():
+        if path_matches(candidate, source_file):
+            return node
+    return None
+
+
 def source_to_doc(source_file: str) -> Path:
     return Path(source_file).with_suffix(".md")
 
@@ -159,7 +191,7 @@ def ruleflow_target(ruleflow: dict) -> Path:
     return Path("ruleflows") / f"{slug(ruleflow.get('path') or ruleflow.get('name') or 'ruleflow')}.md"
 
 
-def rules_for_task(source: Path, docs_dir: Path, task: dict) -> list[dict]:
+def rules_for_task(source: Path, docs_dir: Path, task: dict, graph_by_file: dict[str, dict] | None = None) -> list[dict]:
     rules: list[dict] = []
     seen: set[str] = set()
     for pkg in task.get("packages", []):
@@ -172,29 +204,95 @@ def rules_for_task(source: Path, docs_dir: Path, task: dict) -> list[dict]:
             if idx < len(package_docs):
                 doc_refs.append(package_docs[idx])
             doc_refs.extend(task.get("ruleDocs", []))
+            node = find_graph_node(graph_by_file or {}, source_file)
             rules.append(
                 {
                     "source": source_file,
-                    "name": rule_label(source_file),
+                    "name": node.get("ruleName") if node else rule_label(source_file),
                     "package": pkg.get("name", ""),
                     "packagePath": pkg.get("path", ""),
                     "doc": resolve_rule_doc(source, docs_dir, source_file, doc_refs),
+                    "node": node,
                 }
             )
     for source_file in task.get("explicitRuleFiles", []):
         if source_file in seen:
             continue
         seen.add(source_file)
+        node = find_graph_node(graph_by_file or {}, source_file)
         rules.append(
             {
                 "source": source_file,
-                "name": rule_label(source_file),
+                "name": node.get("ruleName") if node else rule_label(source_file),
                 "package": "explicit rule",
                 "packagePath": "",
                 "doc": resolve_rule_doc(source, docs_dir, source_file, task.get("ruleDocs", [])),
+                "node": node,
             }
         )
     return rules
+
+
+def evidence_values(items: list[dict], limit: int = 4) -> list[str]:
+    values: list[str] = []
+    for item in items or []:
+        value = item.get("businessPath") or item.get("canonicalPath") or item.get("businessObject") or item.get("canonicalObject") or item.get("normalizedText") or item.get("sourceExpression")
+        if value and value not in values:
+            values.append(str(value))
+        if len(values) >= limit:
+            break
+    return values
+
+
+def joined_values(values: list[str]) -> str:
+    return ", ".join(values) if values else "-"
+
+
+def object_values(node: dict | None) -> list[str]:
+    if not node:
+        return []
+    values: list[str] = []
+    for label, key in (("creates", "objectCreates"), ("inserts", "objectInserts"), ("requires", "objectRequires")):
+        for value in evidence_values(node.get(key, []), 3):
+            text = f"{label}: {value}"
+            if text not in values:
+                values.append(text)
+    return values[:4]
+
+
+def rule_doc_label(rule: dict, current_file: Path) -> str:
+    if rule.get("doc") is None:
+        return "Detailed doc: missing"
+    return f"[Open detailed doc]({relative_link(current_file, rule['doc'])})"
+
+
+def append_rule_evidence(lines: list[str], rule: dict, current_file: Path, indent: str) -> None:
+    node = rule.get("node")
+    lines.append(f"{indent}    - {rule_doc_label(rule, current_file)}")
+    if not node:
+        lines.append(f"{indent}    - Evidence: dependency graph node not available")
+        return
+    reads = joined_values(evidence_values(node.get("reads", [])))
+    writes = joined_values(evidence_values(node.get("writes", [])))
+    objects = joined_values(object_values(node))
+    lines.append(f"{indent}    - Reads: {reads}")
+    lines.append(f"{indent}    - Writes: {writes}")
+    lines.append(f"{indent}    - Objects: {objects}")
+
+
+def rule_table_doc(rule: dict, current_file: Path) -> str:
+    if rule.get("doc") is None:
+        return "missing"
+    return f"[open]({relative_link(current_file, rule['doc'])})"
+
+
+def rule_table_evidence(rule: dict, key: str) -> str:
+    node = rule.get("node")
+    if not node:
+        return "-"
+    if key == "objects":
+        return joined_values(object_values(node))
+    return joined_values(evidence_values(node.get(key, []), 3))
 
 
 def write_ruleflow_tree(
@@ -204,6 +302,7 @@ def write_ruleflow_tree(
     current_file: Path,
     ruleflow: dict,
     ruleflow_by_key: dict[str, dict],
+    graph_by_file: dict[str, dict],
     depth: int = 0,
     seen: set[str] | None = None,
 ) -> None:
@@ -216,7 +315,7 @@ def write_ruleflow_tree(
     seen.add(flow_key)
 
     for task in ruleflow.get("tasks", []):
-        rules = rules_for_task(source, docs_dir, task)
+        rules = rules_for_task(source, docs_dir, task, graph_by_file)
         lines.append(f"{indent}- Task: `{task.get('identifier', 'task')}` ({len(rules)} rule file(s))")
         for pkg in task.get("packages", []):
             lines.append(f"{indent}  - Package: `{pkg.get('name', '')}`{f' -> `{pkg.get('path')}`' if pkg.get('path') else ''}")
@@ -226,6 +325,7 @@ def write_ruleflow_tree(
                 label = f"[{label}]({relative_link(current_file, rule['doc'])})"
             lines.append(f"{indent}  - Rule: {label}  ")
             lines.append(f"{indent}    `{rule['source']}`")
+            append_rule_evidence(lines, rule, current_file, indent)
 
     for subflow in ruleflow.get("subflows", []):
         target = find_subflow_target(subflow, ruleflow_by_key)
@@ -235,7 +335,7 @@ def write_ruleflow_tree(
             continue
         target_page = ruleflow_target(target)
         lines.append(f"{indent}- Subflow: [{target.get('name', sub_name)}]({relative_link(current_file, target_page)})")
-        write_ruleflow_tree(lines, source, docs_dir, current_file, target, ruleflow_by_key, depth + 1, set(seen))
+        write_ruleflow_tree(lines, source, docs_dir, current_file, target, ruleflow_by_key, graph_by_file, depth + 1, set(seen))
 
 
 def find_subflow_target(subflow: dict, ruleflow_by_key: dict[str, dict]) -> dict | None:
@@ -257,7 +357,7 @@ def build_ruleflow_lookup(ruleflows: list[dict]) -> dict[str, dict]:
     return lookup
 
 
-def collect_ruleflow_rule_rows(source: Path, docs_dir: Path, ruleflow: dict, ruleflow_by_key: dict[str, dict]) -> list[dict]:
+def collect_ruleflow_rule_rows(source: Path, docs_dir: Path, ruleflow: dict, ruleflow_by_key: dict[str, dict], graph_by_file: dict[str, dict]) -> list[dict]:
     rows: list[dict] = []
     seen_flows: set[str] = set()
 
@@ -267,7 +367,7 @@ def collect_ruleflow_rule_rows(source: Path, docs_dir: Path, ruleflow: dict, rul
             return
         seen_flows.add(flow_key)
         for task in flow.get("tasks", []):
-            for rule in rules_for_task(source, docs_dir, task):
+            for rule in rules_for_task(source, docs_dir, task, graph_by_file):
                 rows.append({**rule, "ruleflow": flow.get("name", "ruleflow"), "ruleflowPath": flow.get("path", ""), "task": task.get("identifier", "task"), "origin": origin})
         for subflow in flow.get("subflows", []):
             target = find_subflow_target(subflow, ruleflow_by_key)
@@ -321,13 +421,14 @@ def append_ruleflow_usage_to_rule_docs(docs_dir: Path, rule_to_flow: dict[str, l
     return updated
 
 
-def generate_ruleflow_pages(source: Path, docs_dir: Path, ruleflow_index: dict | None) -> dict[str, list[dict]]:
+def generate_ruleflow_pages(source: Path, docs_dir: Path, ruleflow_index: dict | None, dependency_graph: dict | None = None) -> dict[str, list[dict]]:
     if not ruleflow_index:
         return {}
     ruleflows = ruleflow_index.get("ruleflows", [])
     if not ruleflows:
         return {}
     ruleflow_by_key = build_ruleflow_lookup(ruleflows)
+    graph_by_file = build_graph_lookup(dependency_graph)
     ruleflow_dir = docs_dir / "ruleflows"
     catalog_dir = docs_dir / "catalogs"
     rule_to_flow: dict[str, list[dict]] = {}
@@ -347,7 +448,7 @@ def generate_ruleflow_pages(source: Path, docs_dir: Path, ruleflow_index: dict |
         target = ruleflow_target(ruleflow)
         previous_flow = sorted_ruleflows[index - 1] if index > 0 else None
         next_flow = sorted_ruleflows[index + 1] if index + 1 < len(sorted_ruleflows) else None
-        rows = collect_ruleflow_rule_rows(source, docs_dir, ruleflow, ruleflow_by_key)
+        rows = collect_ruleflow_rule_rows(source, docs_dir, ruleflow, ruleflow_by_key, graph_by_file)
         index_lines.append(
             f"| [{ruleflow.get('name', 'ruleflow')}]({quote(target.name)}) | `{ruleflow.get('path', '')}` | {len(ruleflow.get('tasks', []))} | {len(ruleflow.get('subflows', []))} | {len(rows)} |"
         )
@@ -378,11 +479,11 @@ def generate_ruleflow_pages(source: Path, docs_dir: Path, ruleflow_index: dict |
                 "",
             ]
         )
-        write_ruleflow_tree(page_lines, source, docs_dir, target, ruleflow, ruleflow_by_key)
+        write_ruleflow_tree(page_lines, source, docs_dir, target, ruleflow, ruleflow_by_key, graph_by_file)
 
         page_lines.extend(["", "## Direct Tasks", ""])
         for task in ruleflow.get("tasks", []):
-            rules = rules_for_task(source, docs_dir, task)
+            rules = rules_for_task(source, docs_dir, task, graph_by_file)
             page_lines.extend([f"### {task.get('identifier', 'task')}", ""])
             if task.get("packages"):
                 page_lines.extend(["Packages:", ""])
@@ -390,12 +491,12 @@ def generate_ruleflow_pages(source: Path, docs_dir: Path, ruleflow_index: dict |
                     page_lines.append(f"- `{pkg.get('name', '')}`{f' -> `{pkg.get('path')}`' if pkg.get('path') else ''}")
                 page_lines.append("")
             if rules:
-                page_lines.extend(["| Rule | Source | Package |", "|---|---|---|"])
+                page_lines.extend(["| Rule | Source | Package | Detailed Doc | Reads | Writes | Objects |", "|---|---|---|---|---|---|---|"])
                 for rule in rules:
                     label = rule["name"]
                     if rule["doc"] is not None:
                         label = f"[{label}]({relative_link(target, rule['doc'])})"
-                    page_lines.append(f"| {label} | `{rule['source']}` | `{rule['package']}` |")
+                    page_lines.append(f"| {label} | `{rule['source']}` | `{rule['package']}` | {rule_table_doc(rule, target)} | {rule_table_evidence(rule, 'reads')} | {rule_table_evidence(rule, 'writes')} | {rule_table_evidence(rule, 'objects')} |")
                 page_lines.append("")
             else:
                 page_lines.extend(["No rule files were resolved for this task.", ""])
@@ -658,6 +759,7 @@ def main() -> int:
     parser.add_argument("--source", type=Path, default=resolve_default_source())
     parser.add_argument("--site-name", default="ODM Application Documentation")
     parser.add_argument("--ruleflow-index", type=Path, help="Optional ruleflow-task-index.json used to generate ruleflow-first navigation")
+    parser.add_argument("--dependency-graph", type=Path, help="Optional rule-dependency-graph.json used to enrich ruleflow pages with reads, writes, and objects")
     parser.add_argument("--build-dir", type=Path, default=PROJECT_ROOT / "build")
     parser.add_argument("--zip-name", default="odm-application-documentation.zip")
     args = parser.parse_args()
@@ -679,8 +781,9 @@ def main() -> int:
     copied = copy_source_markdown(source, docs_dir)
     manifest = load_manifest(source)
     ruleflow_index = load_ruleflow_index(args.ruleflow_index.resolve() if args.ruleflow_index else None)
+    dependency_graph = load_dependency_graph(args.dependency_graph.resolve() if args.dependency_graph else None)
     has_ruleflows = bool(ruleflow_index and ruleflow_index.get("ruleflows"))
-    rule_to_flow = generate_ruleflow_pages(source, docs_dir, ruleflow_index)
+    rule_to_flow = generate_ruleflow_pages(source, docs_dir, ruleflow_index, dependency_graph)
     usage_pages = append_ruleflow_usage_to_rule_docs(docs_dir, rule_to_flow)
     write_catalogs(source, docs_dir, manifest, args.site_name, has_ruleflows)
     write(mkdocs_dir / "mkdocs.yml", yaml_nav(args.site_name, has_ruleflows))
