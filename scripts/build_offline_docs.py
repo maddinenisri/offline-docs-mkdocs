@@ -278,16 +278,61 @@ def collect_ruleflow_rule_rows(source: Path, docs_dir: Path, ruleflow: dict, rul
     return rows
 
 
-def generate_ruleflow_pages(source: Path, docs_dir: Path, ruleflow_index: dict | None) -> None:
+def ruleflow_nav_links(current_file: Path, previous_flow: dict | None, next_flow: dict | None) -> list[str]:
+    links = ["[All Ruleflows](index.md)"]
+    if previous_flow is not None:
+        links.append(f"[Previous: {previous_flow.get('name', 'ruleflow')}]({relative_link(current_file, ruleflow_target(previous_flow))})")
+    if next_flow is not None:
+        links.append(f"[Next: {next_flow.get('name', 'ruleflow')}]({relative_link(current_file, ruleflow_target(next_flow))})")
+    return [" | ".join(links)]
+
+
+def append_ruleflow_usage_to_rule_docs(docs_dir: Path, rule_to_flow: dict[str, list[dict]]) -> int:
+    updated = 0
+    for source_file, rows in sorted(rule_to_flow.items()):
+        doc = next((row.get("doc") for row in rows if row.get("doc") is not None), None)
+        if doc is None:
+            continue
+        target = docs_dir / doc
+        if not target.exists():
+            continue
+        content = target.read_text(encoding="utf-8", errors="replace").rstrip()
+        marker = "## Ruleflow Usage"
+        if marker in content:
+            content = content.split(marker, 1)[0].rstrip()
+        lines = [
+            "",
+            marker,
+            "",
+            "This rule is referenced by the following ruleflow task paths in the generated ruleflow index.",
+            "",
+            "| Root Ruleflow | Owning Ruleflow | Task | Navigation |",
+            "|---|---|---|---|",
+        ]
+        unique_rows = sorted(
+            {(row["rootRuleflow"], row["ruleflow"], row["task"], row["rootPath"]): row for row in rows}.values(),
+            key=lambda item: (item["rootRuleflow"], item["ruleflow"], item["task"]),
+        )
+        for row in unique_rows:
+            nav = f"[Open ruleflow]({relative_link(doc, ruleflow_target({'path': row['rootPath'], 'name': row['rootRuleflow']}))})"
+            lines.append(f"| `{row['rootRuleflow']}` | `{row['ruleflow']}` | `{row['task']}` | {nav} |")
+        target.write_text(content + "\n" + "\n".join(lines).rstrip() + "\n", encoding="utf-8")
+        updated += 1
+    return updated
+
+
+def generate_ruleflow_pages(source: Path, docs_dir: Path, ruleflow_index: dict | None) -> dict[str, list[dict]]:
     if not ruleflow_index:
-        return
+        return {}
     ruleflows = ruleflow_index.get("ruleflows", [])
     if not ruleflows:
-        return
+        return {}
     ruleflow_by_key = build_ruleflow_lookup(ruleflows)
     ruleflow_dir = docs_dir / "ruleflows"
     catalog_dir = docs_dir / "catalogs"
     rule_to_flow: dict[str, list[dict]] = {}
+
+    sorted_ruleflows = sorted(ruleflows, key=lambda item: item.get("name", ""))
 
     index_lines = [
         "# Ruleflows",
@@ -298,8 +343,10 @@ def generate_ruleflow_pages(source: Path, docs_dir: Path, ruleflow_index: dict |
         "|---|---|---:|---:|---:|",
     ]
 
-    for ruleflow in sorted(ruleflows, key=lambda item: item.get("name", "")):
+    for index, ruleflow in enumerate(sorted_ruleflows):
         target = ruleflow_target(ruleflow)
+        previous_flow = sorted_ruleflows[index - 1] if index > 0 else None
+        next_flow = sorted_ruleflows[index + 1] if index + 1 < len(sorted_ruleflows) else None
         rows = collect_ruleflow_rule_rows(source, docs_dir, ruleflow, ruleflow_by_key)
         index_lines.append(
             f"| [{ruleflow.get('name', 'ruleflow')}]({quote(target.name)}) | `{ruleflow.get('path', '')}` | {len(ruleflow.get('tasks', []))} | {len(ruleflow.get('subflows', []))} | {len(rows)} |"
@@ -314,7 +361,7 @@ def generate_ruleflow_pages(source: Path, docs_dir: Path, ruleflow_index: dict |
         ]
         if ruleflow.get("uuid"):
             page_lines.append(f"UUID: `{ruleflow.get('uuid')}`")
-        page_lines.extend(["", "## Operations", ""])
+        page_lines.extend(["", *ruleflow_nav_links(target, previous_flow, next_flow), "", "## Operations", ""])
         operations = ruleflow.get("operations", [])
         if operations:
             for operation in operations:
@@ -364,10 +411,12 @@ def generate_ruleflow_pages(source: Path, docs_dir: Path, ruleflow_index: dict |
                 page_lines.append(f"| `{subflow.get('identifier', '')}` | [{target_flow.get('name', '')}]({relative_link(target, target_page)}) | `{target_flow.get('path', '')}` |")
             page_lines.append("")
 
+        page_lines.extend(["", *ruleflow_nav_links(target, previous_flow, next_flow), ""])
         write(docs_dir / target, "\n".join(page_lines))
 
     write(ruleflow_dir / "index.md", "\n".join(index_lines))
     write_ruleflow_catalogs(catalog_dir, docs_dir, rule_to_flow)
+    return rule_to_flow
 
 
 def write_ruleflow_catalogs(catalog_dir: Path, docs_dir: Path, rule_to_flow: dict[str, list[dict]]) -> None:
@@ -631,7 +680,8 @@ def main() -> int:
     manifest = load_manifest(source)
     ruleflow_index = load_ruleflow_index(args.ruleflow_index.resolve() if args.ruleflow_index else None)
     has_ruleflows = bool(ruleflow_index and ruleflow_index.get("ruleflows"))
-    generate_ruleflow_pages(source, docs_dir, ruleflow_index)
+    rule_to_flow = generate_ruleflow_pages(source, docs_dir, ruleflow_index)
+    usage_pages = append_ruleflow_usage_to_rule_docs(docs_dir, rule_to_flow)
     write_catalogs(source, docs_dir, manifest, args.site_name, has_ruleflows)
     write(mkdocs_dir / "mkdocs.yml", yaml_nav(args.site_name, has_ruleflows))
 
@@ -651,6 +701,7 @@ def main() -> int:
     print(f"Copied Markdown pages: {len(copied)}")
     if has_ruleflows:
         print(f"Generated ruleflow pages: {len(ruleflow_index.get('ruleflows', []))}")
+        print(f"Updated knowledge-base rule pages with ruleflow backlinks: {usage_pages}")
     print(f"Built site: {site_dir}")
     print(f"Packaged ZIP: {dist_zip}")
     print("Offline documentation links are valid.")

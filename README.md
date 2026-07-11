@@ -21,7 +21,7 @@ python scripts/build_offline_docs.py \
   --site-name "ODM Application Documentation"
 ```
 
-The `--ruleflow-index` option is optional, but recommended for customer delivery. When supplied, the generated site starts from a Ruleflows section and creates one page per ruleflow showing operations, RuleTasks, rules, direct subflows, and recursively nested subflows. It also creates reverse catalogs from rule to ruleflow.
+The `--ruleflow-index` option is optional, but recommended for customer delivery. When supplied, the generated site starts from a Ruleflows section and creates one page per ruleflow showing operations, RuleTasks, rules, direct subflows, and recursively nested subflows. Ruleflow pages link forward into matching knowledge-base rule pages, and copied rule pages are enriched with a Ruleflow Usage section that links back to the ruleflows and tasks that reference the rule. It also creates reverse catalogs from rule to ruleflow.
 
 Outputs:
 
@@ -32,7 +32,8 @@ Outputs:
 Generated customer navigation includes:
 
 - `ruleflows/index.html` - all ruleflows with task/subflow/rule counts
-- `ruleflows/*.html` - one page per ruleflow with nested task/subflow tree
+- `ruleflows/*.html` - one page per ruleflow with nested task/subflow tree and previous/next ruleflow navigation
+- copied rule pages include `Ruleflow Usage` backlinks when the ruleflow index source file matches a knowledge-base Markdown page
 - `catalogs/ruleflow-task-catalog.html` - root ruleflow, owning ruleflow, task, and rule mapping
 - `catalogs/rule-to-ruleflow-catalog.html` - reverse lookup from rule to ruleflows
 
