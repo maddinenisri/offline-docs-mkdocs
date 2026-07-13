@@ -1,44 +1,103 @@
 # Offline ODM Documentation Builder
 
-Builds a MkDocs HTML portal from generated ODM knowledge-base Markdown and packages only the generated site as a ZIP.
+Builds a MkDocs HTML portal from generated ODM Markdown and packages only the generated site as a ZIP.
 
 The ZIP is meant for business users. It includes `START_HERE.html`, `index.html`, local assets, and explicit `.html` links. Users do not need Python, MkDocs, a web server, or the Markdown source.
+
+For the current ruleflow documentation product, this repository is the publishing step only. Generate the customer-facing Markdown first with `redux-odm-cli generate-ruleflow-docs`, then point this builder at that final `ruleflow-documentation` folder.
 
 ## Setup
 
 ```bash
+cd /path/to/offline-docs-mkdocs
 python3 -m venv .venv
 . .venv/bin/activate
 pip install -r requirements.txt
 ```
 
-## Build
+## Two-Repo Workflow
+
+First run the CLI repository to generate ruleflow documentation:
 
 ```bash
-python scripts/build_offline_docs.py \
-  --source ../odm-asr-map-backed-example/out/manual-llm-rule-requirements/knowledge-base \
-  --ruleflow-index ../odm-asr-map-backed-example/out/redux-odm-cli-validation/ruleflow-index/indexes/ruleflow-task-index.json \
-  --dependency-graph ../odm-asr-map-backed-example/out/redux-odm-cli-validation/dependency-graph/rule-dependency-graph.json \
-  --site-name "ODM Application Documentation"
+cd /path/to/redux-odm-cli
+npm install
+npm run build
+
+node dist/cli.js build-knowledge-base \
+  --workspace /path/to/client-odm-repo \
+  --rule-project path/to/ruleproject \
+  --out out/manual-llm-rule-requirements/knowledge-base
+
+node dist/cli.js generate-ruleflows \
+  --workspace /path/to/client-odm-repo \
+  --rule-project path/to/ruleproject \
+  --rule-docs out/manual-llm-rule-requirements/knowledge-base \
+  --out out/manual-llm-rule-requirements/ruleflow-index \
+  --index-only
+
+node dist/cli.js generate-ruleflow-docs \
+  --workspace /path/to/client-odm-repo \
+  --rule-project path/to/ruleproject \
+  --ruleflow-index out/manual-llm-rule-requirements/ruleflow-index/indexes/ruleflow-task-index.json \
+  --knowledge-base out/manual-llm-rule-requirements/knowledge-base \
+  --dependency-graph out/manual-llm-rule-requirements/knowledge-base/rule-dependency-graph.json \
+  --out out/manual-llm-rule-requirements/ruleflow-documentation
 ```
 
-The `--ruleflow-index` option is optional, but recommended for customer delivery. When supplied, the generated site starts from a Ruleflows section and creates one page per ruleflow showing operations, RuleTasks, rules, direct subflows, and recursively nested subflows. Ruleflow pages link forward into matching knowledge-base rule pages, and copied rule pages are enriched with a Ruleflow Usage section that links back to the ruleflows and tasks that reference the rule.
+Then run this offline-docs repository to package the final Markdown folder:
 
-The `--dependency-graph` option is also recommended. It enriches each ruleflow rule with deterministic evidence from `rule-dependency-graph.json`, including reads, writes, and created/inserted/required objects. This keeps ruleflow pages useful even when a full Markdown rule document has not been generated yet.
+```bash
+cd /path/to/offline-docs-mkdocs
+. .venv/bin/activate
 
-Outputs:
+python scripts/build_offline_docs.py \
+  --source /path/to/client-odm-repo/out/manual-llm-rule-requirements/ruleflow-documentation \
+  --site-name "ODM Application Ruleflow Documentation" \
+  --zip-name odm-application-ruleflow-documentation.zip
+```
+
+Open or distribute:
+
+```text
+dist/odm-application-ruleflow-documentation.zip
+```
+
+After extracting the ZIP, open:
+
+```text
+START_HERE.html
+```
+
+## Source Folder Rule
+
+Use `--source` for the final generated documentation folder that should become the website. For customer ruleflow docs, use:
+
+```text
+/path/to/client-odm-repo/out/manual-llm-rule-requirements/ruleflow-documentation
+```
+
+Do not use the raw knowledge-base folder as `--source` for customer ruleflow delivery. The raw knowledge base can contain folder summaries, prompt/debug artifacts, generation reports, and intermediate pages. `generate-ruleflow-docs` performs the clean join of:
+
+```text
+ruleflow index + ODM source rules + knowledge-base notes + dependency graph
+```
+
+and writes the customer-facing ruleflow-first documentation.
+
+## Outputs
 
 - `build/mkdocs/` - temporary MkDocs project
 - `build/site/` - generated HTML site
-- `dist/odm-application-documentation.zip` - distributable ZIP
+- `dist/<zip-name>` - distributable ZIP
 
 Generated customer navigation includes:
 
-- `ruleflows/index.html` - all ruleflows with task/subflow/rule counts
-- `ruleflows/*.html` - one page per ruleflow with nested task/subflow tree, previous/next ruleflow navigation, doc availability, reads, writes, and object evidence
-- copied rule pages include `Ruleflow Usage` backlinks when the ruleflow index source file matches a knowledge-base Markdown page
-- `catalogs/ruleflow-task-catalog.html` - root ruleflow, owning ruleflow, task, and rule mapping
-- `catalogs/rule-to-ruleflow-catalog.html` - reverse lookup from rule to ruleflows
+- `ruleflows/index.html` - all ruleflows with task/subflow counts
+- `ruleflows/<ruleflow>/index.html` - one page per ruleflow with tasks, subflows, and rule summary
+- `ruleflows/<ruleflow>/tasks/<task>.html` - task-level drilldown
+- `ruleflows/<ruleflow>/rules/<rule>.html` - source-backed rule logic, data used/updated, and optional knowledge-base notes
+- `catalogs/index.html` - secondary navigation/index page
 
 ## Distribution Rule
 
