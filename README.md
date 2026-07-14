@@ -99,6 +99,125 @@ Generated customer navigation includes:
 - `ruleflows/<ruleflow>/rules/<rule>.html` - source-backed rule logic, data used/updated, and optional knowledge-base notes
 - `catalogs/index.html` - secondary navigation/index page
 
+## Direct Static HTML Mode
+
+For a plain `docs/` folder that already contains ruleflow Markdown and package/rule Markdown, use the direct static builder. This mode does not run MkDocs. It preserves the source folder structure, converts each `.md` file to a same-path `.html` file, adds inline CSS/JavaScript navigation, breadcrumbs, previous/next links, and generates ruleflow context pages under `_contexts/`.
+
+### Expected Source Structure
+
+Use a single source folder containing all Markdown files that should become the website. The recommended shape is:
+
+```text
+docs/
+├── ruleflows/
+│   ├── processClaim-rfl.md
+│   ├── eligibilityOnly-rfl.md
+│   └── intakeOnly-rfl.md
+└── ruleproject/
+    └── ClaimProcessing/
+        └── rules/
+            ├── fraudReview/
+            │   ├── fraudReview.md
+            │   ├── scoringEngine/
+            │   │   ├── index.md
+            │   │   ├── summary.md
+            │   │   └── fraud_score.md
+            │   └── manualReview/
+            │       ├── manualReview.md
+            │       └── escalation/
+            │           └── escalation.md
+            ├── verification/
+            │   ├── verification.md
+            │   └── compliance/
+            │       └── compliance.md
+            └── intake/
+                └── README.md
+```
+
+Rules:
+
+- Put main business ruleflows under `ruleflows/`.
+- Preserve the original ODM package path under `ruleproject/<project>/rules/...`.
+- Put task/package landing pages in `README.md`, `index.md`, or `summary.md`.
+- Put individual rule docs next to the package page, for example `fraud_score.md`.
+- Keep links relative where possible, for example `[Fraud Score](fraud_score.md)`.
+- Ruleflow pages should mention ODM artifact paths when available, for example:
+
+```markdown
+- Path: `ruleproject/ClaimProcessing/rules/processClaim.rfl`
+- Path: `ruleproject/ClaimProcessing/rules/fraudReview/fraudReview.rfl`
+- RuleTask: `score` (package: `fraudReview.scoringEngine`)
+- Rule file: `ruleproject/ClaimProcessing/rules/fraudReview/scoringEngine/fraud_score.dta`
+```
+
+The builder uses those paths to infer this left-navigation shape:
+
+```text
+processClaim
+├── fraudReview
+│   ├── manualReview
+│   │   └── escalation
+│   └── scoringEngine
+│       └── Task/Package: Scoring Engine
+│           └── fraud_score
+└── verification
+    └── compliance
+```
+
+The same package or rule can appear in more than one ruleflow. The canonical page is written once under its original path, and the builder adds `Ruleflow Usage` backlinks plus `_contexts/...` pages so users can see the same rule in each flow path.
+
+### Build A ZIP
+
+```bash
+python scripts/build_static_docs.py \
+  --source /path/to/docs \
+  --site-name "ODM Ruleflow Documentation" \
+  --zip-name odm-ruleflow-static-docs.zip
+```
+
+Open or distribute:
+
+```text
+dist/odm-ruleflow-static-docs.zip
+```
+
+After extracting the ZIP, open:
+
+```text
+START_HERE.html
+```
+
+### Build Without ZIP
+
+Use `--no-zip` when you only want the generated HTML folder for local review or for another packaging process:
+
+```bash
+python scripts/build_static_docs.py \
+  --source /path/to/docs \
+  --site-name "ODM Ruleflow Documentation" \
+  --build-dir build/static-site \
+  --no-zip
+```
+
+Open:
+
+```text
+build/static-site/START_HERE.html
+```
+
+The static builder detects ruleflow pages, follows Markdown links and `ruleproject/.../rules/...` references, and adds `Ruleflow Usage` backlinks to canonical package/rule pages. When the same rule is reached through more than one flow, each usage gets a separate context page so users can distinguish paths such as:
+
+```text
+processClaim -> fraudReview -> scoringEngine -> fraud_score
+renewalClaim -> fraudReview -> scoringEngine -> fraud_score
+```
+
+Outputs:
+
+- `build/static-site/` - generated static HTML
+- `dist/<zip-name>` - distributable ZIP, unless `--no-zip` is used
+- `START_HERE.html` - root launcher inside the ZIP
+
 ## Distribution Rule
 
 Distribute only the ZIP under `dist/`. Do not distribute `build/mkdocs/docs/` or any Markdown source.
