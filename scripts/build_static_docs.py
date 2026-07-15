@@ -9,6 +9,7 @@ from __future__ import annotations
 
 import argparse
 import html
+import json
 import re
 import shutil
 import sys
@@ -53,6 +54,52 @@ class NavItem:
     label: str
     kind: str
     children: list["NavItem"] = field(default_factory=list)
+
+
+def normalize_nav_path(source_root: Path, raw_path: str) -> Path:
+    rel = Path(raw_path)
+    if rel.is_absolute():
+        rel = rel.resolve().relative_to(source_root)
+    target = source_root / rel
+    if target.is_dir():
+        for name in ("index.md", "README.md"):
+            if (target / name).exists():
+                return rel / name
+    if target.exists():
+        return rel
+    raise SystemExit(f"Navigation path does not exist: {raw_path}")
+
+
+def load_nav_items(nav_path: Path | None, source_root: Path, pages: dict[Path, Page]) -> list[NavItem] | None:
+    if nav_path is None:
+        return None
+    if not nav_path.exists():
+        raise SystemExit(f"Navigation file does not exist: {nav_path}")
+    data = json.loads(nav_path.read_text(encoding="utf-8"))
+    roots = data.get("roots")
+    if not isinstance(roots, list):
+        raise SystemExit("Navigation JSON must contain a top-level 'roots' array")
+
+    def item_from_json(raw: dict) -> NavItem:
+        if not isinstance(raw, dict):
+            raise SystemExit("Navigation entries must be JSON objects")
+        raw_path = raw.get("path")
+        if not raw_path:
+            raise SystemExit("Navigation entries must include 'path'")
+        target = normalize_nav_path(source_root, str(raw_path))
+        if target not in pages:
+            raise SystemExit(f"Navigation path is not a Markdown page: {raw_path}")
+        raw_children = raw.get("children", [])
+        if not isinstance(raw_children, list):
+            raise SystemExit(f"Navigation children must be an array: {raw_path}")
+        return NavItem(
+            target=target,
+            label=str(raw.get("label") or pages[target].title),
+            kind=str(raw.get("type") or pages[target].kind),
+            children=[item_from_json(child) for child in raw_children],
+        )
+
+    return [item_from_json(root) for root in roots]
 
 
 def titleize(value: str) -> str:
@@ -272,6 +319,20 @@ def collect_usages(pages: dict[Path, Page], roots: list[Path]) -> dict[Path, lis
     return usages
 
 
+def collect_usages_from_nav(nav_items: list[NavItem]) -> dict[Path, list[Usage]]:
+    usages: dict[Path, list[Usage]] = {}
+
+    def visit(root: Path, item: NavItem, path: list[Path]) -> None:
+        if item.target != root:
+            usages.setdefault(item.target, []).append(Usage(root=root, target=item.target, path=path))
+        for child in item.children:
+            visit(root, child, [*path, child.target])
+
+    for item in nav_items:
+        visit(item.target, item, [item.target])
+    return usages
+
+
 def child_label(parent: Path, child: Path, pages: dict[Path, Page]) -> str:
     page = pages[child]
     if page.kind == "ruleflow":
@@ -355,13 +416,21 @@ def nav_targets(item: NavItem) -> set[Path]:
     return targets
 
 
-def nav_tree(pages: dict[Path, Page], current: Path, roots: list[Path], current_html: Path | None = None) -> str:
+def nav_tree(
+    pages: dict[Path, Page],
+    current: Path,
+    roots: list[Path],
+    current_html: Path | None = None,
+    explicit_nav: list[NavItem] | None = None,
+) -> str:
     current_html = current_html or output_for_md(current)
-    root_items = [build_nav_item(root, pages) for root in roots]
+    root_items = explicit_nav if explicit_nav is not None else [build_nav_item(root, pages) for root in roots]
     used_targets: set[Path] = set()
     for item in root_items:
         used_targets.update(nav_targets(item))
     ruleflow_items = [render_nav_item(item, pages, current, current_html) for item in root_items]
+    if explicit_nav is not None:
+        return "\n".join(ruleflow_items)
     package_pages = [
         path for path, page in pages.items()
         if page.kind != "ruleflow" and path not in used_targets
@@ -453,8 +522,35 @@ def usage_html(page: Page, usages: dict[Path, list[Usage]], pages: dict[Path, Pa
     return "\n".join(body)
 
 
+def folder_cross_links(page: Page, pages: dict[Path, Page], current_html: Path | None = None) -> str:
+    current_html = current_html or page.rel_html
+    name = page.rel_md.name.lower()
+    if name == "index.md":
+        readme = page.rel_md.parent / "README.md"
+        if readme in pages:
+            href = rel_href(current_html, pages[readme].rel_html)
+            return (
+                '<section class="usage">'
+                "<h2>Folder Details</h2>"
+                f'<p><a href="{href}">Open README details</a></p>'
+                "</section>"
+            )
+    if name == "readme.md":
+        index = page.rel_md.parent / "index.md"
+        if index in pages:
+            href = rel_href(current_html, pages[index].rel_html)
+            return (
+                '<section class="usage">'
+                "<h2>Folder Index</h2>"
+                f'<p><a href="{href}">Back to folder index</a></p>'
+                "</section>"
+            )
+    return ""
+
+
 def context_path(usage: Usage) -> Path:
-    return Path("_contexts") / slug(usage.root.as_posix()) / usage.target.with_suffix(".html")
+    path_slug = slug("__".join(item.as_posix() for item in usage.path))
+    return Path("_contexts") / slug(usage.root.as_posix()) / path_slug / usage.target.with_suffix(".html")
 
 
 def render_markdown(text: str) -> str:
@@ -553,14 +649,23 @@ def shell(
 </html>"""
 
 
-def render_page(source_root: Path, output_root: Path, page: Page, pages: dict[Path, Page], usages: dict[Path, list[Usage]], roots: list[Path]) -> None:
+def render_page(
+    source_root: Path,
+    output_root: Path,
+    page: Page,
+    pages: dict[Path, Page],
+    usages: dict[Path, list[Usage]],
+    roots: list[Path],
+    explicit_nav: list[NavItem] | None,
+) -> None:
     rendered = render_markdown(page.content)
     rendered = rewrite_markdown_links(rendered, page, pages, source_root, page.rel_html)
+    rendered += folder_cross_links(page, pages, page.rel_html)
     rendered += usage_html(page, usages, pages)
     html_text = shell(
         title=page.title,
         body=rendered,
-        sidebar=nav_tree(pages, page.rel_md, roots, page.rel_html),
+        sidebar=nav_tree(pages, page.rel_md, roots, page.rel_html, explicit_nav),
         crumbs=breadcrumbs(page.rel_html, page.rel_md),
         pager_links=pager(pages, page.rel_md),
         current_kind=page.kind,
@@ -568,11 +673,19 @@ def render_page(source_root: Path, output_root: Path, page: Page, pages: dict[Pa
     write(output_root / page.rel_html, html_text)
 
 
-def render_context_page(source_root: Path, output_root: Path, usage: Usage, pages: dict[Path, Page], roots: list[Path]) -> None:
+def render_context_page(
+    source_root: Path,
+    output_root: Path,
+    usage: Usage,
+    pages: dict[Path, Page],
+    roots: list[Path],
+    explicit_nav: list[NavItem] | None,
+) -> None:
     page = pages[usage.target]
     current_html = context_path(usage)
     rendered = render_markdown(page.content)
     rendered = rewrite_markdown_links(rendered, page, pages, source_root, current_html)
+    rendered += folder_cross_links(page, pages, current_html)
     path_text = " -> ".join(pages[item].title for item in usage.path)
     context_banner = (
         "<section class=\"usage\">"
@@ -585,7 +698,7 @@ def render_context_page(source_root: Path, output_root: Path, usage: Usage, page
     html_text = shell(
         title=f"{pages[usage.root].title} -> {page.title}",
         body=body,
-        sidebar=nav_tree(pages, usage.target, roots, current_html),
+        sidebar=nav_tree(pages, usage.target, roots, current_html, explicit_nav),
         crumbs=" / ".join(
             [
                 f'<a href="{rel_href(current_html, Path("index.html"))}">Home</a>',
@@ -599,7 +712,7 @@ def render_context_page(source_root: Path, output_root: Path, usage: Usage, page
     write(output_root / current_html, html_text)
 
 
-def render_home(output_root: Path, pages: dict[Path, Page], roots: list[Path]) -> None:
+def render_home(output_root: Path, pages: dict[Path, Page], roots: list[Path], explicit_nav: list[NavItem] | None) -> None:
     rows = []
     for root in roots:
         page = pages[root]
@@ -615,7 +728,7 @@ def render_home(output_root: Path, pages: dict[Path, Page], roots: list[Path]) -
     html_text = shell(
         title="Offline Ruleflow Documentation",
         body=body,
-        sidebar=nav_tree(pages, roots[0], roots, Path("index.html")) if roots else "",
+        sidebar=nav_tree(pages, roots[0], roots, Path("index.html"), explicit_nav) if roots else "",
         crumbs="Home",
         pager_links="All Pages",
         current_kind="home",
@@ -623,11 +736,14 @@ def render_home(output_root: Path, pages: dict[Path, Page], roots: list[Path]) -
     write(output_root / "index.html", html_text)
 
 
-def copy_non_markdown(source_root: Path, output_root: Path) -> None:
+def copy_non_markdown(source_root: Path, output_root: Path, excluded: set[Path] | None = None) -> None:
+    excluded = excluded or set()
     for src in source_root.rglob("*"):
         if not src.is_file() or src.suffix.lower() == ".md":
             continue
         rel = src.relative_to(source_root)
+        if rel in excluded:
+            continue
         dst = output_root / rel
         dst.parent.mkdir(parents=True, exist_ok=True)
         shutil.copyfile(src, dst)
@@ -662,22 +778,24 @@ def package_site(site_root: Path, zip_path: Path) -> None:
                 archive.write(path, path.relative_to(site_root).as_posix())
 
 
-def build(source: Path, output_root: Path, site_name: str, zip_path: Path | None) -> None:
+def build(source: Path, output_root: Path, site_name: str, zip_path: Path | None, nav_path: Path | None = None) -> None:
     if output_root.exists():
         shutil.rmtree(output_root)
     output_root.mkdir(parents=True)
     pages = load_pages(source)
     if not pages:
         raise SystemExit(f"No Markdown files found under {source}")
-    roots = choose_root_pages(pages)
-    usages = collect_usages(pages, roots)
-    copy_non_markdown(source, output_root)
+    explicit_nav = load_nav_items(nav_path, source, pages)
+    roots = [item.target for item in explicit_nav] if explicit_nav is not None else choose_root_pages(pages)
+    usages = collect_usages_from_nav(explicit_nav) if explicit_nav is not None else collect_usages(pages, roots)
+    excluded = {nav_path.relative_to(source)} if nav_path is not None and nav_path.is_relative_to(source) else set()
+    copy_non_markdown(source, output_root, excluded)
     for page in pages.values():
-        render_page(source, output_root, page, pages, usages, roots)
+        render_page(source, output_root, page, pages, usages, roots, explicit_nav)
     for rows in usages.values():
         for usage in rows:
-            render_context_page(source, output_root, usage, pages, roots)
-    render_home(output_root, pages, roots)
+            render_context_page(source, output_root, usage, pages, roots, explicit_nav)
+    render_home(output_root, pages, roots, explicit_nav)
     write_start_here(output_root, site_name)
     problems = validate_links(output_root)
     if problems:
@@ -687,6 +805,7 @@ def build(source: Path, output_root: Path, site_name: str, zip_path: Path | None
         package_site(output_root, zip_path)
     print(f"Markdown pages: {len(pages)}")
     print(f"Ruleflow roots: {len(roots)}")
+    print(f"Navigation mode: {'explicit' if explicit_nav is not None else 'inferred'}")
     print(f"Ruleflow usage contexts: {sum(len(rows) for rows in usages.values())}")
     print(f"Built static site: {output_root}")
     if zip_path is not None:
@@ -697,6 +816,7 @@ def build(source: Path, output_root: Path, site_name: str, zip_path: Path | None
 def main() -> int:
     parser = argparse.ArgumentParser()
     parser.add_argument("--source", type=Path, required=True, help="Folder containing Markdown documentation")
+    parser.add_argument("--nav", type=Path, help="Optional nav.json file controlling the left navigation tree")
     parser.add_argument("--site-name", default="Offline Ruleflow Documentation")
     parser.add_argument("--build-dir", type=Path, default=PROJECT_ROOT / "build" / "static-site")
     parser.add_argument("--zip-name", default="offline-ruleflow-documentation.zip")
@@ -706,7 +826,8 @@ def main() -> int:
     if not source.exists():
         raise SystemExit(f"Source folder does not exist: {source}")
     zip_path = None if args.no_zip else PROJECT_ROOT / "dist" / args.zip_name
-    build(source, args.build_dir.resolve(), args.site_name, zip_path)
+    nav_path = args.nav.resolve() if args.nav else None
+    build(source, args.build_dir.resolve(), args.site_name, zip_path, nav_path)
     return 0
 
 

@@ -103,6 +103,8 @@ Generated customer navigation includes:
 
 For a plain `docs/` folder that already contains ruleflow Markdown and package/rule Markdown, use the direct static builder. This mode does not run MkDocs. It preserves the source folder structure, converts each `.md` file to a same-path `.html` file, adds inline CSS/JavaScript navigation, breadcrumbs, previous/next links, and generates ruleflow context pages under `_contexts/`.
 
+Use an explicit `nav.json` for real projects. Inference is kept only as a fallback/demo mode. The JSON file prevents duplicate sidebar entries when a folder has both `index.md` and `README.md`, and it preserves multiple sibling subflows exactly as authored.
+
 ### Expected Source Structure
 
 Use a single source folder containing all Markdown files that should become the website. The recommended shape is:
@@ -166,11 +168,76 @@ processClaim
 
 The same package or rule can appear in more than one ruleflow. The canonical page is written once under its original path, and the builder adds `Ruleflow Usage` backlinks plus `_contexts/...` pages so users can see the same rule in each flow path.
 
+### Left Navigation JSON
+
+Put `nav.json` at the root of the source folder or pass it explicitly with `--nav`.
+
+```json
+{
+  "title": "ODM Ruleflow Documentation",
+  "roots": [
+    {
+      "type": "ruleflow",
+      "label": "processClaim",
+      "path": "ruleflows/processClaim-rfl.md",
+      "children": [
+        {
+          "type": "subflow",
+          "label": "fraudReview",
+          "path": "ruleflows/fraudReview-rfl.md",
+          "children": [
+            {
+              "type": "task",
+              "label": "scoringEngine",
+              "path": "ruleproject/ClaimProcessing/rules/fraudReview/scoringEngine/index.md",
+              "children": [
+                {
+                  "type": "rule",
+                  "label": "fraud_score",
+                  "path": "ruleproject/ClaimProcessing/rules/fraudReview/scoringEngine/fraud_score.md"
+                }
+              ]
+            },
+            {
+              "type": "subflow",
+              "label": "manualReview",
+              "path": "ruleflows/manualReview-rfl.md"
+            }
+          ]
+        },
+        {
+          "type": "subflow",
+          "label": "verification",
+          "path": "ruleflows/verification-rfl.md"
+        }
+      ]
+    }
+  ]
+}
+```
+
+Each `path` must point to a Markdown file under `--source`. If a path points to a directory, the builder uses `index.md` first and then `README.md`.
+
+Only entries listed in `nav.json` appear in the left navigation. Other Markdown files are still converted to HTML and can be reached through content links.
+
+When `nav.json` is inside the source folder, it is used at build time but is not copied into the generated site or ZIP.
+
+### `index.md` And `README.md`
+
+When a folder contains both files:
+
+- `index.md` is the folder landing page and should be the page referenced from `nav.json`.
+- `README.md` is supporting detail and is not shown in the left navigation unless explicitly listed.
+- The generated `index.html` gets an `Open README details` link.
+- The generated `README.html` gets a `Back to folder index` link.
+- Both files are converted to HTML.
+
 ### Build A ZIP
 
 ```bash
 python scripts/build_static_docs.py \
   --source /path/to/docs \
+  --nav /path/to/docs/nav.json \
   --site-name "ODM Ruleflow Documentation" \
   --zip-name odm-ruleflow-static-docs.zip
 ```
@@ -194,6 +261,7 @@ Use `--no-zip` when you only want the generated HTML folder for local review or 
 ```bash
 python scripts/build_static_docs.py \
   --source /path/to/docs \
+  --nav /path/to/docs/nav.json \
   --site-name "ODM Ruleflow Documentation" \
   --build-dir build/static-site \
   --no-zip
