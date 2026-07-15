@@ -101,6 +101,8 @@ Generated customer navigation includes:
 
 ## Direct Static HTML Mode
 
+For a complete customer implementation workflow, see [DEVELOPER_GUIDE.md](DEVELOPER_GUIDE.md).
+
 For a plain `docs/` folder that already contains ruleflow Markdown and package/rule Markdown, use the direct static builder. This mode does not run MkDocs. It preserves the source folder structure, converts each `.md` file to a same-path `.html` file, adds inline CSS/JavaScript navigation, breadcrumbs, previous/next links, and generates ruleflow context pages under `_contexts/`.
 
 Use an explicit `nav.json` for real projects. Inference is kept only as a fallback/demo mode. The JSON file prevents duplicate sidebar entries when a folder has both `index.md` and `README.md`, and it preserves multiple sibling subflows exactly as authored.
